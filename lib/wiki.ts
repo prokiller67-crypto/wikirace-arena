@@ -53,21 +53,48 @@ export interface LoadedArticle {
   html: string; // sanitized body html, links annotated with data-title
 }
 
+// LRU-ish cache + in-flight dedupe: hover-prefetch makes most clicks instant
+const articleCache = new Map<string, LoadedArticle>();
+const inFlight = new Map<string, Promise<LoadedArticle>>();
+const CACHE_MAX = 50;
+
 export async function fetchArticle(title: string): Promise<LoadedArticle> {
-  // hard timeout so a slow Wikipedia response can never wedge the race
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 12000);
-  try {
-    const res = await fetch(`${REST}/page/html/${titleToPath(title)}`, {
-      headers: { accept: "text/html" },
-      signal: ctrl.signal,
-    });
-    if (!res.ok) throw new Error(`Couldn't load “${title}”`);
-    const raw = await res.text();
-    return sanitizeArticle(raw);
-  } finally {
-    clearTimeout(t);
-  }
+  const key = normalizeTitle(title);
+  const cached = articleCache.get(key);
+  if (cached) return cached;
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+
+  const p = (async () => {
+    // hard timeout so a slow Wikipedia response can never wedge the race
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const res = await fetch(`${REST}/page/html/${titleToPath(title)}`, {
+        headers: { accept: "text/html" },
+        signal: ctrl.signal,
+      });
+      if (!res.ok) throw new Error(`Couldn't load “${title}”`);
+      const raw = await res.text();
+      const art = sanitizeArticle(raw);
+      if (articleCache.size >= CACHE_MAX) {
+        const oldest = articleCache.keys().next().value;
+        if (oldest !== undefined) articleCache.delete(oldest);
+      }
+      articleCache.set(key, art);
+      return art;
+    } finally {
+      clearTimeout(t);
+      inFlight.delete(key);
+    }
+  })();
+  inFlight.set(key, p);
+  return p;
+}
+
+// fire-and-forget warm-up used by hover/mousedown prefetch
+export function prefetchArticle(title: string): void {
+  fetchArticle(title).catch(() => {});
 }
 
 function sanitizeArticle(raw: string): LoadedArticle {

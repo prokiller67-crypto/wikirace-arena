@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import RaceClient, { type RoomProps } from "@/components/RaceClient";
+import { prefetchArticle } from "@/lib/wiki";
 import type { Room } from "@/lib/rooms";
 
 type Stage = "join" | "lobby" | "race" | "error";
@@ -52,6 +53,11 @@ export default function RoomClient({ code }: { code: string }) {
     const id = setInterval(refresh, 1500);
     return () => clearInterval(id);
   }, [stage, refresh]);
+
+  // warm up the start article while everyone waits in the lobby — race opens instantly
+  useEffect(() => {
+    if (stage === "lobby" && room?.start) prefetchArticle(room.start);
+  }, [stage, room?.start]);
 
   const join = async () => {
     setBusy(true);

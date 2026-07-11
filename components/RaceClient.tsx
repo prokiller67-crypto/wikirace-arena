@@ -1,11 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { preconnect } from "react-dom";
 import Link from "next/link";
 import {
   fetchArticle,
   fetchSummary,
   normalizeTitle,
+  prefetchArticle,
   type LoadedArticle,
 } from "@/lib/wiki";
 import {
@@ -42,6 +44,8 @@ export interface RoomProps {
 }
 
 export default function RaceClient({ room }: { room?: RoomProps }) {
+  preconnect("https://en.wikipedia.org");
+  preconnect("https://upload.wikimedia.org");
   const [setup, setSetup] = useState<Setup | null>(null);
   const [phase, setPhase] = useState<Phase>("loading");
   const [error, setError] = useState("");
@@ -230,6 +234,13 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
     [navigate, articleLoading]
   );
 
+  // warm the cache the moment the cursor touches a link — click becomes instant
+  const onArticleHover = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    const a = (e.target as HTMLElement).closest("a");
+    const title = a?.getAttribute("data-wl-title");
+    if (title) prefetchArticle(title);
+  }, []);
+
   // --- ghost progress (solo modes) ---
   const ghost = setup?.ghost ?? null;
   const ghostTotal = ghost ? ghost.steps.length : 0;
@@ -357,6 +368,9 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
         ref={scrollRef}
         className="flex-1 overflow-y-auto speedlines"
         onClick={onArticleClick}
+        onMouseOver={onArticleHover}
+        onMouseDown={onArticleHover}
+        onTouchStart={onArticleHover}
       >
         <article
           className={`wiki-page max-w-3xl mx-auto my-6 px-8 py-6 shadow-2xl rounded-sm transition-opacity ${
