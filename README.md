@@ -16,7 +16,7 @@ Built solo in 12 hours for **JecHacks 2026**.
 |---|---|
 | 👻 **Ghost race** | Race a bot pacer with 3 difficulties: Chill Carl, Sweaty Sam, GOAT-9000 |
 | 🔗 **Challenge link** | Finish a run → get a link with your *entire run encoded inside it*. Friends open it and race your live ghost — they see which article you were reading at every moment. Zero backend involved. |
-| ⚔️ **Live rooms** | Create a room, share the invite link, up to 8 friends race the same matchup simultaneously with a synced countdown and live progress bars |
+| ⚔️ **Live rooms** | Create a room, share the invite link, up to 8 players race the same matchup simultaneously with a synced countdown and live progress bars |
 
 ## 🛠️ Tech
 

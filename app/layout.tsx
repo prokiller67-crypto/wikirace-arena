@@ -21,10 +21,26 @@ const mono = Chivo_Mono({
   subsets: ["latin"],
 });
 
+const TITLE = "WikiRace Arena — speedrun the encyclopedia";
+const DESCRIPTION =
+  "Race from one Wikipedia article to another using only links. Beat the ghost, race friends live, or send a challenge link with your run inside it.";
+
 export const metadata: Metadata = {
-  title: "WikiRace Arena — speedrun the encyclopedia",
-  description:
-    "Race from one Wikipedia article to another using only links. Beat the ghost, then send friends a challenge link with your run inside it.",
+  metadataBase: new URL("https://wikirace-arena.vercel.app"),
+  title: TITLE,
+  description: DESCRIPTION,
+  openGraph: {
+    title: TITLE,
+    description: DESCRIPTION,
+    url: "https://wikirace-arena.vercel.app",
+    siteName: "WikiRace Arena",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: TITLE,
+    description: DESCRIPTION,
+  },
 };
 
 export default function RootLayout({
