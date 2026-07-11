@@ -25,28 +25,33 @@ export function isBlockedTitle(title: string): boolean {
   return BLOCKED_NS.test(title.replace(/_/g, " "));
 }
 
-// Try our Vercel proxy first (immune to ISP throttling of wikipedia.org, CDN-cached),
-// fall back to Wikipedia directly if the proxy hiccups.
-async function fetchFirstOk(urls: string[], accept: string, timeoutMs: number): Promise<Response> {
-  let lastErr: unknown = null;
-  for (const url of urls) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const res = await fetch(url, { headers: { accept }, signal: ctrl.signal });
-      if (res.ok) return res;
-      lastErr = new Error(`HTTP ${res.status}`);
-    } catch (e) {
-      lastErr = e;
-    } finally {
-      clearTimeout(t);
-    }
+// Race the Vercel proxy AGAINST direct Wikipedia in parallel — first успешный
+// ответ побеждает, второй отменяется. Каждый игрок автоматически получает свой
+// самый быстрый маршрут (у кого-то душат wikipedia.org, у кого-то дальше CDN).
+async function fetchFastest(urls: string[], accept: string, timeoutMs: number): Promise<Response> {
+  const ctrls = urls.map(() => new AbortController());
+  const kill = setTimeout(() => ctrls.forEach((c) => c.abort()), timeoutMs);
+  try {
+    const winner = await Promise.any(
+      urls.map(async (url, i) => {
+        const res = await fetch(url, { headers: { accept }, signal: ctrls[i].signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return { res, i };
+      })
+    );
+    ctrls.forEach((c, j) => {
+      if (j !== winner.i) c.abort();
+    });
+    return winner.res;
+  } catch {
+    throw new Error("fetch failed");
+  } finally {
+    clearTimeout(kill);
   }
-  throw lastErr instanceof Error ? lastErr : new Error("fetch failed");
 }
 
 export async function fetchSummary(title: string): Promise<WikiSummary> {
-  const res = await fetchFirstOk(
+  const res = await fetchFastest(
     [
       `/api/wiki/summary?title=${encodeURIComponent(title)}`,
       `${REST}/page/summary/${titleToPath(title)}?redirect=true`,
@@ -67,7 +72,7 @@ export async function fetchSummary(title: string): Promise<WikiSummary> {
 }
 
 export async function fetchRandomSummary(): Promise<WikiSummary> {
-  const res = await fetchFirstOk(
+  const res = await fetchFastest(
     [`/api/wiki/random`, `${REST}/page/random/summary`],
     "application/json",
     8000
@@ -97,7 +102,7 @@ export async function fetchArticle(title: string): Promise<LoadedArticle> {
 
   const p = (async () => {
     try {
-      const res = await fetchFirstOk(
+      const res = await fetchFastest(
         [
           `/api/wiki/html?title=${encodeURIComponent(title)}`,
           `${REST}/page/html/${titleToPath(title)}`,
