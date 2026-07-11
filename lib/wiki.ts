@@ -25,12 +25,39 @@ export function isBlockedTitle(title: string): boolean {
   return BLOCKED_NS.test(title.replace(/_/g, " "));
 }
 
+// Try our Vercel proxy first (immune to ISP throttling of wikipedia.org, CDN-cached),
+// fall back to Wikipedia directly if the proxy hiccups.
+async function fetchFirstOk(urls: string[], accept: string, timeoutMs: number): Promise<Response> {
+  let lastErr: unknown = null;
+  for (const url of urls) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { headers: { accept }, signal: ctrl.signal });
+      if (res.ok) return res;
+      lastErr = new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      lastErr = e;
+    } finally {
+      clearTimeout(t);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("fetch failed");
+}
+
 export async function fetchSummary(title: string): Promise<WikiSummary> {
-  const res = await fetch(`${REST}/page/summary/${titleToPath(title)}?redirect=true`, {
-    headers: { accept: "application/json" },
+  const res = await fetchFirstOk(
+    [
+      `/api/wiki/summary?title=${encodeURIComponent(title)}`,
+      `${REST}/page/summary/${titleToPath(title)}?redirect=true`,
+    ],
+    "application/json",
+    8000
+  ).catch(() => {
+    throw new Error(`No article found for “${title}”`);
   });
-  if (!res.ok) throw new Error(`No article found for “${title}”`);
   const j = await res.json();
+  if (!j.title) throw new Error(`No article found for “${title}”`);
   return {
     title: j.title as string,
     description: j.description,
@@ -40,10 +67,13 @@ export async function fetchSummary(title: string): Promise<WikiSummary> {
 }
 
 export async function fetchRandomSummary(): Promise<WikiSummary> {
-  const res = await fetch(`${REST}/page/random/summary`, {
-    headers: { accept: "application/json" },
+  const res = await fetchFirstOk(
+    [`/api/wiki/random`, `${REST}/page/random/summary`],
+    "application/json",
+    8000
+  ).catch(() => {
+    throw new Error("Random article failed");
   });
-  if (!res.ok) throw new Error("Random article failed");
   const j = await res.json();
   return { title: j.title, description: j.description, thumbnail: j.thumbnail?.source };
 }
@@ -66,15 +96,17 @@ export async function fetchArticle(title: string): Promise<LoadedArticle> {
   if (pending) return pending;
 
   const p = (async () => {
-    // hard timeout so a slow Wikipedia response can never wedge the race
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 12000);
     try {
-      const res = await fetch(`${REST}/page/html/${titleToPath(title)}`, {
-        headers: { accept: "text/html" },
-        signal: ctrl.signal,
+      const res = await fetchFirstOk(
+        [
+          `/api/wiki/html?title=${encodeURIComponent(title)}`,
+          `${REST}/page/html/${titleToPath(title)}`,
+        ],
+        "text/html",
+        10000
+      ).catch(() => {
+        throw new Error(`Couldn't load “${title}”`);
       });
-      if (!res.ok) throw new Error(`Couldn't load “${title}”`);
       const raw = await res.text();
       const art = sanitizeArticle(raw);
       if (articleCache.size >= CACHE_MAX) {
@@ -84,7 +116,6 @@ export async function fetchArticle(title: string): Promise<LoadedArticle> {
       articleCache.set(key, art);
       return art;
     } finally {
-      clearTimeout(t);
       inFlight.delete(key);
     }
   })();
