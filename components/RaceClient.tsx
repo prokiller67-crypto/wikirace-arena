@@ -23,7 +23,7 @@ import {
 } from "@/lib/game";
 import type { Room, RoomPlayer } from "@/lib/rooms";
 
-type Phase = "loading" | "countdown" | "racing" | "won" | "error";
+type Phase = "loading" | "countdown" | "racing" | "won" | "lost" | "error";
 
 interface Setup {
   start: string;
@@ -172,7 +172,11 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   );
 
   useEffect(() => {
-    if (!room || (phase !== "racing" && phase !== "won" && phase !== "countdown")) return;
+    if (
+      !room ||
+      (phase !== "racing" && phase !== "won" && phase !== "lost" && phase !== "countdown")
+    )
+      return;
     const id = setInterval(async () => {
       try {
         const res = await fetch(`/api/room/${room.code}`, { cache: "no-store" });
@@ -292,6 +296,27 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
     room && roomState
       ? roomState.players.filter((p) => p.id !== room.playerId)
       : [];
+
+  // Race ends for EVERYONE once the podium is full: fewer than 4 players —
+  // first finisher wins; 4+ players — top-3 podium.
+  const podiumSize = roomState && roomState.players.length >= 4 ? 3 : 1;
+  const finishersCount = roomState
+    ? roomState.players.filter((p) => p.finished).length
+    : 0;
+  useEffect(() => {
+    if (room && phase === "racing" && finishersCount >= podiumSize) {
+      setPhase("lost");
+    }
+  }, [room, phase, finishersCount, podiumSize]);
+
+  const sortedPlayers = roomState
+    ? [...roomState.players].sort((a, b) => {
+        if (a.finished && b.finished) return (a.timeMs ?? 0) - (b.timeMs ?? 0);
+        if (a.finished) return -1;
+        if (b.finished) return 1;
+        return b.clicks - a.clicks;
+      })
+    : [];
 
   if (phase === "error") {
     return (
@@ -424,6 +449,34 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
         </div>
       )}
 
+      {/* defeat overlay — podium filled before you finished */}
+      {phase === "lost" && room && roomState && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="card-dark slide-up max-w-lg w-full p-8 border-2 border-(--coral) my-8">
+            <div className="checker h-3 mb-6" />
+            <h2 className="display text-4xl text-(--coral) mb-1">WRECKED!</h2>
+            <p className="mono text-sm mb-5 opacity-80">
+              {podiumSize === 1
+                ? `${sortedPlayers[0]?.name ?? "Someone"} reached ${setup.targetCanonical} first 🏆`
+                : "The podium is full — race over."}{" "}
+              You made {path.length - 1} click{path.length - 1 === 1 ? "" : "s"}.
+            </p>
+            <div className="mb-6">
+              <h3 className="mono text-xs uppercase opacity-60 mb-2">final standings</h3>
+              <Standings players={sortedPlayers} meId={room.playerId} />
+            </div>
+            <div className="flex gap-3">
+              <Link
+                href="/"
+                className="flex-1 btn-race py-3 text-center text-lg uppercase"
+              >
+                Rematch — new race
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* win overlay */}
       {phase === "won" && result && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
@@ -431,7 +484,13 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
           <div className="card-dark slide-up max-w-lg w-full p-8 border-2 border-(--acid) my-8">
             <div className="checker h-3 mb-6" />
             <h2 className="display text-4xl text-(--acid) mb-1">
-              {room ? "FINISHED!" : playerWon ? "VICTORY LAP!" : "FINISHED!"}
+              {room
+                ? sortedPlayers.findIndex((p) => p.id === room.playerId) === 0
+                  ? "VICTORY LAP!"
+                  : "ON THE PODIUM!"
+                : playerWon
+                  ? "VICTORY LAP!"
+                  : "FINISHED!"}
             </h2>
             {!room && ghost && (
               <p className="mono text-sm mb-4 text-(--sky)">
@@ -459,34 +518,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
             {room && roomState && (
               <div className="mb-5">
                 <h3 className="mono text-xs uppercase opacity-60 mb-2">standings</h3>
-                <div className="space-y-1">
-                  {[...roomState.players]
-                    .sort((a, b) => {
-                      if (a.finished && b.finished)
-                        return (a.timeMs ?? 0) - (b.timeMs ?? 0);
-                      if (a.finished) return -1;
-                      if (b.finished) return 1;
-                      return b.clicks - a.clicks;
-                    })
-                    .map((p, i) => (
-                      <div
-                        key={p.id}
-                        className={`mono text-sm flex gap-2 items-center ${
-                          p.id === room.playerId ? "text-(--acid)" : "opacity-85"
-                        }`}
-                      >
-                        <span className="w-6">
-                          {p.finished ? ["🥇", "🥈", "🥉"][i] ?? `${i + 1}.` : "…"}
-                        </span>
-                        <span className="flex-1 truncate">{p.name}</span>
-                        <span>
-                          {p.finished
-                            ? `${fmtTime(p.timeMs ?? 0)} · ${p.clicks} clicks`
-                            : `racing — ${p.clicks} clicks`}
-                        </span>
-                      </div>
-                    ))}
-                </div>
+                <Standings players={sortedPlayers} meId={room.playerId} />
               </div>
             )}
 
@@ -538,6 +570,31 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
         </div>
       )}
     </main>
+  );
+}
+
+function Standings({ players, meId }: { players: RoomPlayer[]; meId: string }) {
+  return (
+    <div className="space-y-1">
+      {players.map((p, i) => (
+        <div
+          key={p.id}
+          className={`mono text-sm flex gap-2 items-center ${
+            p.id === meId ? "text-(--acid)" : "opacity-85"
+          }`}
+        >
+          <span className="w-6">
+            {p.finished ? ["🥇", "🥈", "🥉"][i] ?? `${i + 1}.` : "…"}
+          </span>
+          <span className="flex-1 truncate">{p.name}</span>
+          <span>
+            {p.finished
+              ? `${fmtTime(p.timeMs ?? 0)} · ${p.clicks} clicks`
+              : `DNF — ${p.clicks} clicks`}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 
