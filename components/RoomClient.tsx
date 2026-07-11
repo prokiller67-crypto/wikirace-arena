@@ -16,6 +16,7 @@ export default function RoomClient({ code }: { code: string }) {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const joinedRef = useRef(false);
+  const clockOffsetRef = useRef(0); // serverNow - clientNow, corrects local clock skew
 
   // restore identity (host lands here right after creating the room)
   useEffect(() => {
@@ -32,7 +33,8 @@ export default function RoomClient({ code }: { code: string }) {
     try {
       const res = await fetch(`/api/room/${code}`, { cache: "no-store" });
       if (!res.ok) throw new Error("Room not found — check the code.");
-      const r: Room = await res.json();
+      const r: Room & { serverNow?: number } = await res.json();
+      if (r.serverNow) clockOffsetRef.current = r.serverNow - Date.now();
       setRoom(r);
       if (r.startAt) setStage("race");
       return r;
@@ -123,6 +125,7 @@ export default function RoomClient({ code }: { code: string }) {
       target: room.target,
       startAt: room.startAt,
       playerName: me?.name ?? "Racer",
+      clockOffset: clockOffsetRef.current,
     };
     return <RaceClient room={props} />;
   }

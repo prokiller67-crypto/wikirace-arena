@@ -1,5 +1,10 @@
+import ErrorBoundary from "@/components/ErrorBoundary";
 import RaceClient from "@/components/RaceClient";
 
 export default function RacePage() {
-  return <RaceClient />;
+  return (
+    <ErrorBoundary>
+      <RaceClient />
+    </ErrorBoundary>
+  );
 }

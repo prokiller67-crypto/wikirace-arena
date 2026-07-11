@@ -16,7 +16,8 @@ export async function GET(
   const { code } = await params;
   const room = await getRoom(code.toUpperCase());
   if (!room) return NextResponse.json({ error: "room not found" }, { status: 404 });
-  return NextResponse.json(room);
+  // serverNow lets clients correct for local clock skew
+  return NextResponse.json({ ...room, serverNow: Date.now() });
 }
 
 // actions: join / start / progress

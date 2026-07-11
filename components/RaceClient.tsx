@@ -36,8 +36,9 @@ export interface RoomProps {
   playerId: string;
   start: string;
   target: string;
-  startAt: number; // epoch ms
+  startAt: number; // epoch ms, SERVER clock
   playerName: string;
+  clockOffset: number; // serverNow - clientNow at room fetch time
 }
 
 export default function RaceClient({ room }: { room?: RoomProps }) {
@@ -59,7 +60,10 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   phaseRef.current = phase;
 
   const now = useCallback(
-    () => (room ? Date.now() - room.startAt : performance.now() - startTimeRef.current),
+    () =>
+      room
+        ? Date.now() + room.clockOffset - room.startAt
+        : performance.now() - startTimeRef.current,
     [room]
   );
 
@@ -109,7 +113,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
         const first = await fetchArticle(s);
         setArticle(first);
         setPath([{ title: first.canonicalTitle, atMs: 0 }]);
-        if (room && Date.now() < room.startAt) {
+        if (room && Date.now() + room.clockOffset < room.startAt) {
           setPhase("countdown");
         } else {
           startTimeRef.current = performance.now();
@@ -125,10 +129,12 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   // --- countdown for rooms ---
   useEffect(() => {
     if (phase !== "countdown" || !room) return;
+    const mountedAt = Date.now();
     const id = setInterval(() => {
-      const left = room.startAt - Date.now();
+      const left = room.startAt - (Date.now() + room.clockOffset);
       setCountdownLeft(left);
-      if (left <= 0) setPhase("racing");
+      // watchdog: never let a countdown hold the race hostage for more than 15s
+      if (left <= 0 || Date.now() - mountedAt > 15000) setPhase("racing");
     }, 100);
     return () => clearInterval(id);
   }, [phase, room]);

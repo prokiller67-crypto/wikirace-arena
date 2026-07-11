@@ -54,12 +54,20 @@ export interface LoadedArticle {
 }
 
 export async function fetchArticle(title: string): Promise<LoadedArticle> {
-  const res = await fetch(`${REST}/page/html/${titleToPath(title)}`, {
-    headers: { accept: "text/html" },
-  });
-  if (!res.ok) throw new Error(`Couldn't load “${title}”`);
-  const raw = await res.text();
-  return sanitizeArticle(raw);
+  // hard timeout so a slow Wikipedia response can never wedge the race
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const res = await fetch(`${REST}/page/html/${titleToPath(title)}`, {
+      headers: { accept: "text/html" },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`Couldn't load “${title}”`);
+    const raw = await res.text();
+    return sanitizeArticle(raw);
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 function sanitizeArticle(raw: string): LoadedArticle {
