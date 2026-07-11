@@ -88,10 +88,13 @@ export interface LoadedArticle {
   html: string; // sanitized body html, links annotated with data-title
 }
 
-// LRU-ish cache + in-flight dedupe: hover-prefetch makes most clicks instant
+// LRU-ish cache + in-flight dedupe: hover-prefetch makes most clicks instant.
+// Caps are deliberately small — unbounded prefetch was OOM-crashing Chrome tabs
+// ("Aw, Snap! error code 5") during long multiplayer races.
 const articleCache = new Map<string, LoadedArticle>();
 const inFlight = new Map<string, Promise<LoadedArticle>>();
-const CACHE_MAX = 50;
+const CACHE_MAX = 12;
+const PREFETCH_MAX_PARALLEL = 2;
 
 export async function fetchArticle(title: string): Promise<LoadedArticle> {
   const key = normalizeTitle(title);
@@ -128,8 +131,12 @@ export async function fetchArticle(title: string): Promise<LoadedArticle> {
   return p;
 }
 
-// fire-and-forget warm-up used by hover/mousedown prefetch
+// fire-and-forget warm-up used by hover/mousedown prefetch — hard-capped so
+// sweeping the cursor across a link-dense paragraph can't stampede the tab
 export function prefetchArticle(title: string): void {
+  const key = normalizeTitle(title);
+  if (articleCache.has(key) || inFlight.has(key)) return;
+  if (inFlight.size >= PREFETCH_MAX_PARALLEL) return;
   fetchArticle(title).catch(() => {});
 }
 

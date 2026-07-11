@@ -149,7 +149,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   // --- timer ---
   useEffect(() => {
     if (phase !== "racing") return;
-    const id = setInterval(() => setElapsed(Math.max(0, now())), 53);
+    const id = setInterval(() => setElapsed(Math.max(0, now())), 100);
     return () => clearInterval(id);
   }, [phase, now]);
 
