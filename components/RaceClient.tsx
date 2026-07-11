@@ -223,16 +223,26 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
     [setup, now, pushProgress]
   );
 
-  const onArticleClick = useCallback(
-    (e: React.MouseEvent) => {
+  // Navigate on pointerdown: fires identically for trackpad taps, physical
+  // presses, and touch — a regular `click` gets swallowed by macOS trackpads
+  // when the finger rolls slightly during a physical press.
+  const onArticlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
       const a = (e.target as HTMLElement).closest("a");
-      if (!a) return;
-      e.preventDefault();
-      const title = a.getAttribute("data-wl-title");
-      if (title && !articleLoading) navigate(title);
+      const title = a?.getAttribute("data-wl-title");
+      if (title) {
+        e.preventDefault();
+        if (!articleLoading) navigate(title);
+      }
     },
     [navigate, articleLoading]
   );
+
+  // block the default hash-jump of the synthetic click that follows
+  const onArticleClick = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("a")) e.preventDefault();
+  }, []);
 
   // warm the cache the moment the cursor touches a link — click becomes instant
   const onArticleHover = useCallback((e: React.MouseEvent | React.TouchEvent) => {
@@ -368,9 +378,8 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
         ref={scrollRef}
         className="flex-1 overflow-y-auto speedlines"
         onClick={onArticleClick}
+        onPointerDown={onArticlePointerDown}
         onMouseOver={onArticleHover}
-        onMouseDown={onArticleHover}
-        onTouchStart={onArticleHover}
       >
         <article
           className={`wiki-page max-w-3xl mx-auto my-6 px-8 py-6 shadow-2xl rounded-sm transition-opacity ${
