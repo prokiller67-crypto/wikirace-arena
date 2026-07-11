@@ -60,6 +60,8 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   const [roomState, setRoomState] = useState<Room | null>(null);
 
   const startTimeRef = useRef<number>(0); // performance.now() basis for solo, epoch for rooms
+  const startEpochRef = useRef(0);
+  const saveKeyRef = useRef("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const phaseRef = useRef<Phase>("loading");
   phaseRef.current = phase;
@@ -104,12 +106,35 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
 
     (async () => {
       try {
+        // crash recovery: a reload mid-race must not reset progress to zero
+        const saveKey = room ? `wr-prog-${room.code}-${room.playerId}` : "wr-prog-solo";
+        saveKeyRef.current = saveKey;
+        let saved: {
+          s: string;
+          t: string;
+          e: number;
+          p: [string, number][];
+          g?: GhostPlan;
+        } | null = null;
+        try {
+          saved = JSON.parse(sessionStorage.getItem(saveKey) ?? "null");
+        } catch {}
+        if (
+          saved &&
+          (normalizeTitle(saved.s) !== normalizeTitle(s) ||
+            normalizeTitle(saved.t) !== normalizeTitle(t))
+        ) {
+          saved = null; // stale blob from a different race
+        }
+
         const [, targetSum] = await Promise.all([fetchSummary(s), fetchSummary(t)]);
-        const ghost: GhostPlan | null = challenger
-          ? ghostFromResult(challenger)
-          : ghostParam
-            ? makeGhost(ghostParam)
-            : null;
+        const ghost: GhostPlan | null =
+          saved?.g ??
+          (challenger
+            ? ghostFromResult(challenger)
+            : ghostParam
+              ? makeGhost(ghostParam)
+              : null);
         setSetup({
           start: s,
           target: t,
@@ -117,15 +142,35 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
           ghost,
           playerName,
         });
-        const first = await fetchArticle(s);
+        const resumeTitle = saved ? saved.p[saved.p.length - 1][0] : s;
+        const first = await fetchArticle(resumeTitle);
         setArticle(first);
-        setPath([{ title: first.canonicalTitle, atMs: 0 }]);
+        setPath(
+          saved
+            ? saved.p.map(([title, atMs]) => ({ title, atMs }))
+            : [{ title: first.canonicalTitle, atMs: 0 }]
+        );
+        startEpochRef.current = saved?.e ?? Date.now();
         if (room && Date.now() + room.clockOffset < room.startAt) {
           setPhase("countdown");
         } else {
-          startTimeRef.current = performance.now();
+          // continue the clock from where the crash left it
+          startTimeRef.current =
+            performance.now() - (Date.now() - startEpochRef.current);
           setPhase("racing");
         }
+        try {
+          sessionStorage.setItem(
+            saveKey,
+            JSON.stringify({
+              s,
+              t,
+              e: startEpochRef.current,
+              p: saved?.p ?? [[first.canonicalTitle, 0]],
+              g: ghost ?? undefined,
+            })
+          );
+        } catch {}
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load the race.");
         setPhase("error");
@@ -201,6 +246,22 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
           const won =
             normalizeTitle(art.canonicalTitle) ===
             normalizeTitle(setup.targetCanonical);
+          try {
+            if (won) {
+              sessionStorage.removeItem(saveKeyRef.current);
+            } else {
+              sessionStorage.setItem(
+                saveKeyRef.current,
+                JSON.stringify({
+                  s: setup.start,
+                  t: setup.target,
+                  e: startEpochRef.current,
+                  p: next.map((x) => [x.title, x.atMs]),
+                  g: setup.ghost ?? undefined,
+                })
+              );
+            }
+          } catch {}
           if (won) {
             const res: RaceResult = {
               name: setup.playerName,
@@ -315,6 +376,15 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
       setPhase("lost");
     }
   }, [room, ghost, phase, ghostFinished]);
+
+  // race over — drop the crash-recovery blob
+  useEffect(() => {
+    if (phase === "lost" || phase === "won") {
+      try {
+        sessionStorage.removeItem(saveKeyRef.current);
+      } catch {}
+    }
+  }, [phase]);
 
   const sortedPlayers = roomState
     ? [...roomState.players].sort((a, b) => {
