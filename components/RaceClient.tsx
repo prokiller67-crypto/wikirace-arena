@@ -309,6 +309,13 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
     }
   }, [room, phase, finishersCount, podiumSize]);
 
+  // solo ghost race is also first-to-finish: the ghost crossing the line ends it
+  useEffect(() => {
+    if (!room && ghost && phase === "racing" && ghostFinished) {
+      setPhase("lost");
+    }
+  }, [room, ghost, phase, ghostFinished]);
+
   const sortedPlayers = roomState
     ? [...roomState.players].sort((a, b) => {
         if (a.finished && b.finished) return (a.timeMs ?? 0) - (b.timeMs ?? 0);
@@ -449,28 +456,46 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
         </div>
       )}
 
-      {/* defeat overlay — podium filled before you finished */}
-      {phase === "lost" && room && roomState && (
+      {/* defeat overlay — someone (player or ghost) filled the podium first */}
+      {phase === "lost" && (room ? roomState !== null : ghost !== null) && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="card-dark slide-up max-w-lg w-full p-8 border-2 border-(--coral) my-8">
             <div className="checker h-3 mb-6" />
             <h2 className="display text-4xl text-(--coral) mb-1">WRECKED!</h2>
             <p className="mono text-sm mb-5 opacity-80">
-              {podiumSize === 1
-                ? `${sortedPlayers[0]?.name ?? "Someone"} reached ${setup.targetCanonical} first 🏆`
-                : "The podium is full — race over."}{" "}
+              {!room && ghost
+                ? `👻 ${ghost.name} reached ${setup.targetCanonical} in ${fmtTime(ghostFinishMs)} 🏆`
+                : podiumSize === 1
+                  ? `${sortedPlayers[0]?.name ?? "Someone"} reached ${setup.targetCanonical} first 🏆`
+                  : "The podium is full — race over."}{" "}
               You made {path.length - 1} click{path.length - 1 === 1 ? "" : "s"}.
             </p>
-            <div className="mb-6">
-              <h3 className="mono text-xs uppercase opacity-60 mb-2">final standings</h3>
-              <Standings players={sortedPlayers} meId={room.playerId} />
-            </div>
+            {room && (
+              <div className="mb-6">
+                <h3 className="mono text-xs uppercase opacity-60 mb-2">
+                  final standings
+                </h3>
+                <Standings players={sortedPlayers} meId={room.playerId} />
+              </div>
+            )}
             <div className="flex gap-3">
+              {!room && (
+                <button
+                  onClick={() => window.location.reload()}
+                  className="flex-1 btn-race py-3 text-center text-lg uppercase cursor-pointer"
+                >
+                  Rematch
+                </button>
+              )}
               <Link
                 href="/"
-                className="flex-1 btn-race py-3 text-center text-lg uppercase"
+                className={`flex-1 py-3 text-center uppercase ${
+                  room
+                    ? "btn-race text-lg"
+                    : "border border-(--line) mono text-sm hover:border-(--acid) self-stretch flex items-center justify-center"
+                }`}
               >
-                Rematch — new race
+                New race
               </Link>
             </div>
           </div>
