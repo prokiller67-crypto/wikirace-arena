@@ -14,7 +14,10 @@ export async function GET(req: NextRequest) {
   return NextResponse.json(j, {
     status: res.status,
     headers: {
-      "Cache-Control": "public, s-maxage=604800, stale-while-revalidate=86400",
+      // never let the CDN memorize a 404/5xx for a week
+      "Cache-Control": res.ok
+        ? "public, s-maxage=604800, stale-while-revalidate=86400"
+        : "no-store",
     },
   });
 }

@@ -56,6 +56,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   const [countdownLeft, setCountdownLeft] = useState(0);
   const [result, setResult] = useState<RaceResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFallback, setCopyFallback] = useState("");
   const [roomState, setRoomState] = useState<Room | null>(null);
 
   const startTimeRef = useRef<number>(0); // performance.now() basis for solo, epoch for rooms
@@ -90,7 +91,9 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
       challenger = hash ? decodeChallenge(hash) : null;
       s = challenger?.start || params.get("start") || "";
       t = challenger?.target || params.get("target") || "";
-      ghostParam = params.get("ghost") as GhostDifficulty | null;
+      const g = params.get("ghost");
+      ghostParam =
+        g === "chill" || g === "sweaty" || g === "goated" ? g : null;
       playerName = localStorage.getItem("wr-name") || "Racer";
       if (!s || !t) {
         setError("This race link is missing a start or target article.");
@@ -223,12 +226,14 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
     [setup, now, pushProgress]
   );
 
-  // Navigate on pointerdown: fires identically for trackpad taps, physical
-  // presses, and touch — a regular `click` gets swallowed by macOS trackpads
-  // when the finger rolls slightly during a physical press.
+  // Mouse navigates on pointerdown (macOS trackpads swallow physical presses
+  // as micro-selections if we wait for `click`). Touch must NOT navigate on
+  // pointerdown — fingers start scrolls there — so it navigates on click.
+  const lastPointerTypeRef = useRef("mouse");
   const onArticlePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (e.button !== 0) return;
+      lastPointerTypeRef.current = e.pointerType;
+      if (e.pointerType !== "mouse" || e.button !== 0) return;
       const a = (e.target as HTMLElement).closest("a");
       const title = a?.getAttribute("data-wl-title");
       if (title) {
@@ -239,10 +244,19 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
     [navigate, articleLoading]
   );
 
-  // block the default hash-jump of the synthetic click that follows
-  const onArticleClick = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("a")) e.preventDefault();
-  }, []);
+  // block the default hash-jump; touch/pen navigate here
+  const onArticleClick = useCallback(
+    (e: React.MouseEvent) => {
+      const a = (e.target as HTMLElement).closest("a");
+      if (!a) return;
+      e.preventDefault();
+      if (lastPointerTypeRef.current !== "mouse") {
+        const title = a.getAttribute("data-wl-title");
+        if (title && !articleLoading) navigate(title);
+      }
+    },
+    [navigate, articleLoading]
+  );
 
   // warm the cache the moment the cursor touches a link — click becomes instant
   const onArticleHover = useCallback((e: React.MouseEvent | React.TouchEvent) => {
@@ -264,9 +278,13 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
       : "";
 
   const copyChallenge = async () => {
-    await navigator.clipboard.writeText(challengeUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+    try {
+      await navigator.clipboard.writeText(challengeUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopyFallback(challengeUrl); // clipboard blocked — show the url
+    }
   };
 
   const playerWon = result !== null && (!ghost || result.timeMs <= ghostFinishMs);
@@ -335,8 +353,8 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
           <span className="mono text-xs opacity-70">
             {ghostFinished
               ? `finished in ${fmtTime(ghostFinishMs)} 😤`
-              : ghost.isReplay && ghost.steps[ghostDone]
-                ? `reading: ${ghost.steps[ghostDone].title}`
+              : ghost.isReplay
+                ? `reading: ${ghostDone > 0 ? ghost.steps[ghostDone - 1].title : setup.start}`
                 : `${ghostDone}/${ghostTotal} hops`}
           </span>
         </div>
@@ -487,6 +505,14 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
               >
                 {copied ? "✓ Copied — go taunt a friend" : "📎 Copy challenge link"}
               </button>
+              {copyFallback && (
+                <input
+                  readOnly
+                  value={copyFallback}
+                  onFocus={(e) => e.target.select()}
+                  className="w-full bg-[#0a0a0e] border border-(--line) px-3 py-2 mono text-xs"
+                />
+              )}
               <p className="mono text-[11px] opacity-50 text-center">
                 Your whole run is encoded in the link — friends race your live ghost.
                 No account, no server, no excuses.

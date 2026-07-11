@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { fetchRandomSummary, fetchSummary, randomFunPair } from "@/lib/wiki";
+import {
+  fetchRandomSummary,
+  fetchSummary,
+  normalizeTitle,
+  randomFunPair,
+} from "@/lib/wiki";
 import type { GhostDifficulty } from "@/lib/game";
 
 type Mode = "curated" | "random" | "custom";
@@ -39,6 +44,13 @@ export default function Home() {
         fetchSummary(customStart.trim()),
         fetchSummary(customTarget.trim()),
       ]);
+      // "NYC" and "New York City" canonicalize to the same article — that race
+      // would spawn you standing on the target with no way to win
+      if (normalizeTitle(a.title) === normalizeTitle(b.title)) {
+        throw new Error(
+          `Both articles resolve to “${a.title}” — pick two different ones.`
+        );
+      }
       return [a.title, b.title];
     }
     if (mode === "random") {
@@ -194,6 +206,11 @@ export default function Home() {
             </div>
 
             {/* name + go */}
+            {error && (
+              <p className="mono text-sm text-(--coral) border border-(--coral) px-3 py-2">
+                ⚠️ {error}
+              </p>
+            )}
             <div className="flex gap-3 flex-wrap items-stretch">
               <input
                 value={name}
@@ -217,7 +234,6 @@ export default function Home() {
             >
               ⚔️ Create a room — race your friends live
             </button>
-            {error && <p className="mono text-sm text-(--coral)">{error}</p>}
           </section>
 
           {/* right: rules */}

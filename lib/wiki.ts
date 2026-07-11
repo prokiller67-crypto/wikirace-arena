@@ -151,14 +151,17 @@ function sanitizeArticle(raw: string): LoadedArticle {
     }
   });
 
+  // imagemap <area> hrefs bypass our <a> interception and hard-navigate the
+  // browser to a 404 — strip them
+  doc.querySelectorAll("area").forEach((el) => el.removeAttribute("href"));
+
   // annotate links
   doc.querySelectorAll("a").forEach((a) => {
-    const rel = a.getAttribute("rel") ?? "";
     const href = a.getAttribute("href") ?? "";
     a.removeAttribute("target");
-    const isWiki = rel.includes("mw:WikiLink") || href.startsWith("./");
-    if (!isWiki) {
-      // external / citation url — make it inert
+    // only relative ./Title links are playable; interwiki (mw:WikiLink/Interwiki),
+    // external and citation urls are inert
+    if (!href.startsWith("./")) {
       a.removeAttribute("href");
       a.classList.add("wl-inert");
       return;
@@ -168,7 +171,11 @@ function sanitizeArticle(raw: string): LoadedArticle {
     if (hashIdx >= 0) t = t.slice(0, hashIdx);
     t = decodeURIComponent(t).replace(/_/g, " ");
     const isNew = a.classList.contains("new"); // red link, article doesn't exist
-    if (!t || isNew || isBlockedTitle(t)) {
+    // footnote [1] links and reference backlinks point at the CURRENT article —
+    // clicking them must not count as a hop
+    const isSelf =
+      normalizeTitle(t) === normalizeTitle(canonicalTitle) || href.includes("#cite_");
+    if (!t || isNew || isSelf || isBlockedTitle(t)) {
       a.removeAttribute("href");
       a.classList.add("wl-inert");
       return;

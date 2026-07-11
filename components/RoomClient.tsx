@@ -16,6 +16,7 @@ export default function RoomClient({ code }: { code: string }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copyFallback, setCopyFallback] = useState("");
   const joinedRef = useRef(false);
   const clockOffsetRef = useRef(0); // serverNow - clientNow, corrects local clock skew
 
@@ -33,16 +34,20 @@ export default function RoomClient({ code }: { code: string }) {
   const refresh = useCallback(async () => {
     try {
       const res = await fetch(`/api/room/${code}`, { cache: "no-store" });
-      if (!res.ok) throw new Error("Room not found — check the code.");
+      if (res.status === 404) {
+        // the only truly fatal answer — the room genuinely doesn't exist
+        setError("Room not found — check the code.");
+        setStage("error");
+        return null;
+      }
+      if (!res.ok) return null; // transient 5xx — keep polling
       const r: Room & { serverNow?: number } = await res.json();
       if (r.serverNow) clockOffsetRef.current = r.serverNow - Date.now();
       setRoom(r);
       if (r.startAt) setStage("race");
       return r;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Room not found.");
-      setStage("error");
-      return null;
+    } catch {
+      return null; // network blip — keep polling
     }
   }, [code]);
 
@@ -105,9 +110,13 @@ export default function RoomClient({ code }: { code: string }) {
   };
 
   const copyInvite = async () => {
-    await navigator.clipboard.writeText(window.location.href);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopyFallback(window.location.href); // clipboard blocked — show the url
+    }
   };
 
   if (stage === "error") {
@@ -207,6 +216,14 @@ export default function RoomClient({ code }: { code: string }) {
           >
             {copied ? "✓ Invite copied" : "📎 Copy invite link"}
           </button>
+          {copyFallback && (
+            <input
+              readOnly
+              value={copyFallback}
+              onFocus={(e) => e.target.select()}
+              className="w-full bg-[#0a0a0e] border border-(--line) px-3 py-2 mono text-xs"
+            />
+          )}
           {room && playerId === room.hostId ? (
             <button
               onClick={startRace}

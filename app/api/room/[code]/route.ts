@@ -40,7 +40,8 @@ export async function POST(
       return NextResponse.json({ error: "room is full (8 max)" }, { status: 409 });
     }
     const playerId = makePlayerId();
-    room.players.push(newPlayer(playerId, body?.name ?? "Racer", room.start));
+    const name = typeof body?.name === "string" ? body.name : "Racer";
+    room.players.push(newPlayer(playerId, name, room.start));
     await saveRoom(room);
     return NextResponse.json({ playerId, room });
   }
