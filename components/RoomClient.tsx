@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import RaceClient, { type RoomProps } from "@/components/RaceClient";
-import { prefetchArticle } from "@/lib/wiki";
+import {
+  fetchRandomSummary,
+  fetchSummary,
+  isBlockedTitle,
+  normalizeTitle,
+  prefetchArticle,
+  randomFunPairExcept,
+} from "@/lib/wiki";
 import type { Room } from "@/lib/rooms";
 
 type Stage = "join" | "lobby" | "race" | "error";
@@ -15,9 +22,13 @@ export default function RoomClient({ code }: { code: string }) {
   const [playerId, setPlayerId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState("Working…");
   const [copied, setCopied] = useState(false);
   const [copyFallback, setCopyFallback] = useState("");
-  const joinedRef = useRef(false);
+  const [draftStart, setDraftStart] = useState("");
+  const [draftTarget, setDraftTarget] = useState("");
+  const [pairDirty, setPairDirty] = useState(false);
+  const [pairStatus, setPairStatus] = useState("");
   const clockOffsetRef = useRef(0); // serverNow - clientNow, corrects local clock skew
 
   // restore identity (host lands here right after creating the room)
@@ -26,7 +37,6 @@ export default function RoomClient({ code }: { code: string }) {
     const saved = sessionStorage.getItem(`wr-room-${code}`);
     if (saved) {
       setPlayerId(saved);
-      joinedRef.current = true;
       setStage("lobby");
     }
   }, [code]);
@@ -64,8 +74,16 @@ export default function RoomClient({ code }: { code: string }) {
     if (stage === "lobby" && room?.start) prefetchArticle(room.start);
   }, [stage, room?.start]);
 
+  useEffect(() => {
+    if (!room) return;
+    setDraftStart(room.start);
+    setDraftTarget(room.target);
+    setPairDirty(false);
+  }, [room?.round, room?.start, room?.target]);
+
   const join = async () => {
     setBusy(true);
+    setBusyLabel("Joining…");
     setError("");
     try {
       const trimmed = name.trim() || "Racer";
@@ -83,7 +101,6 @@ export default function RoomClient({ code }: { code: string }) {
       sessionStorage.setItem(`wr-room-${code}`, j.playerId);
       setPlayerId(j.playerId);
       setRoom(j.room);
-      joinedRef.current = true;
       setStage("lobby");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't join.");
@@ -92,22 +109,156 @@ export default function RoomClient({ code }: { code: string }) {
     }
   };
 
-  const startRace = async () => {
+  const configurePair = async (start: string, target: string): Promise<Room> => {
+    if (!room) throw new Error("Room is still loading.");
+    const res = await fetch(`/api/room/${code}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "configure",
+        playerId,
+        round: room.round,
+        start,
+        target,
+      }),
+    });
+    const next = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(next?.error ?? "Couldn't update the matchup.");
+    }
+    setRoom(next);
+    setDraftStart(next.start);
+    setDraftTarget(next.target);
+    setPairDirty(false);
+    return next as Room;
+  };
+
+  const resolveCustomPair = async (): Promise<[string, string]> => {
+    if (!draftStart.trim() || !draftTarget.trim()) {
+      throw new Error("Fill in both articles.");
+    }
+    const [start, target] = await Promise.all([
+      fetchSummary(draftStart.trim()),
+      fetchSummary(draftTarget.trim()),
+    ]);
+    if (isBlockedTitle(start.title) || isBlockedTitle(target.title)) {
+      throw new Error("Use regular Wikipedia articles, not a special namespace.");
+    }
+    if (normalizeTitle(start.title) === normalizeTitle(target.title)) {
+      throw new Error(
+        `Both fields resolve to “${start.title}” — choose two different articles.`
+      );
+    }
+    return [start.title, target.title];
+  };
+
+  const applyCustomPair = async () => {
     setBusy(true);
+    setBusyLabel("Checking custom matchup…");
+    setError("");
+    setPairStatus("");
     try {
-      const res = await fetch(`/api/room/${code}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start", playerId }),
-      });
-      if (res.ok) {
-        setRoom(await res.json());
-        setStage("race");
-      }
+      const [start, target] = await resolveCustomPair();
+      await configurePair(start, target);
+      setPairStatus("✓ Custom matchup ready for everyone");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't update the matchup.");
     } finally {
       setBusy(false);
     }
   };
+
+  const rerollClassic = async () => {
+    if (!room) return;
+    setBusy(true);
+    setBusyLabel("Picking classic matchup…");
+    setError("");
+    setPairStatus("");
+    try {
+      const pair = randomFunPairExcept(room.start, room.target);
+      await configurePair(pair[0], pair[1]);
+      setPairStatus("✓ New classic matchup ready");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't reroll the matchup.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rerollChaos = async () => {
+    setBusy(true);
+    setBusyLabel("Drawing chaos matchup…");
+    setError("");
+    setPairStatus("");
+    try {
+      let pair: [string, string] | null = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const [start, target] = await Promise.all([
+          fetchRandomSummary(),
+          fetchRandomSummary(),
+        ]);
+        if (
+          !isBlockedTitle(start.title) &&
+          !isBlockedTitle(target.title) &&
+          normalizeTitle(start.title) !== normalizeTitle(target.title)
+        ) {
+          pair = [start.title, target.title];
+          break;
+        }
+      }
+      if (!pair) throw new Error("Couldn't draw two usable random articles.");
+      await configurePair(pair[0], pair[1]);
+      setPairStatus("✓ Chaos matchup ready");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't draw random articles.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startRace = async () => {
+    if (!room) return;
+    setBusy(true);
+    setBusyLabel("Starting round…");
+    setError("");
+    setPairStatus("");
+    try {
+      let activeRoom = room;
+      if (pairDirty) {
+        const [start, target] = await resolveCustomPair();
+        activeRoom = await configurePair(start, target);
+      }
+      const res = await fetch(`/api/room/${code}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "start",
+          playerId,
+          round: activeRoom.round,
+        }),
+      });
+      const next = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(next?.error ?? "Couldn't start the race.");
+      }
+      setRoom(next);
+      setStage("race");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't start the race.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRoomRoundChange = useCallback((nextRoom: Room) => {
+    setRoom(nextRoom);
+    setError("");
+    setPairStatus(`Round ${nextRoom.round} is ready`);
+    setBusy(false);
+    // Always unmount the completed RaceClient first. If the host started very
+    // quickly, the lobby's immediate poll will mount the new round afterward.
+    setStage("lobby");
+  }, []);
 
   const copyInvite = async () => {
     try {
@@ -138,11 +289,19 @@ export default function RoomClient({ code }: { code: string }) {
       playerId,
       start: room.start,
       target: room.target,
+      round: room.round,
       startAt: room.startAt,
       playerName: me?.name ?? "Racer",
+      isHost: room.hostId === playerId,
       clockOffset: clockOffsetRef.current,
     };
-    return <RaceClient room={props} />;
+    return (
+      <RaceClient
+        key={`${room.code}:${room.round}`}
+        room={props}
+        onRoomRoundChange={handleRoomRoundChange}
+      />
+    );
   }
 
   if (stage === "join") {
@@ -180,39 +339,127 @@ export default function RoomClient({ code }: { code: string }) {
 
   // lobby
   return (
-    <main className="min-h-screen speedlines flex flex-col items-center justify-center p-6">
-      <div className="card-dark max-w-lg w-full p-8 slide-up">
+    <main className="min-h-screen speedlines flex flex-col items-center justify-center p-4 sm:p-6">
+      <div className="card-dark max-w-2xl w-full p-5 sm:p-8 slide-up my-4">
         <div className="checker h-3 mb-6" />
-        <h1 className="display text-2xl mb-1">
-          ROOM <span className="text-(--acid)">{code}</span>
-        </h1>
+        <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+          <h1 className="display text-2xl">
+            ROOM <span className="text-(--acid)">{code}</span>
+          </h1>
+          <span className="mono text-xs uppercase text-(--sky)">
+            round {room?.round ?? "…"}
+          </span>
+        </div>
         {room && (
-          <p className="mono text-sm opacity-80 mb-6">
-            {room.start} <span className="text-(--coral)">→</span> {room.target}
-          </p>
+          <div className="mono text-sm mb-6 flex min-w-0 items-center gap-2">
+            <span className="min-w-0 truncate" title={room.start}>
+              {room.start}
+            </span>
+            <span className="shrink-0 text-(--coral)">→</span>
+            <span className="min-w-0 truncate text-(--acid)" title={room.target}>
+              {room.target}
+            </span>
+          </div>
         )}
+
+        {room && playerId === room.hostId && (
+          <section className="border border-(--line) bg-[#0a0a0e] p-4 mb-6">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <h2 className="mono text-xs uppercase opacity-60">choose the matchup</h2>
+              <span className="mono text-[11px] opacity-50">host controls</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+              <button
+                onClick={rerollClassic}
+                disabled={busy}
+                className="min-h-11 border border-(--line) px-3 py-2.5 mono text-xs uppercase hover:border-(--acid) cursor-pointer disabled:opacity-50"
+              >
+                ↻ Classic reroll
+              </button>
+              <button
+                onClick={rerollChaos}
+                disabled={busy}
+                className="min-h-11 border border-(--line) px-3 py-2.5 mono text-xs uppercase hover:border-(--sky) cursor-pointer disabled:opacity-50"
+              >
+                🎲 Full chaos
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+              <input
+                value={draftStart}
+                onChange={(event) => {
+                  setDraftStart(event.target.value);
+                  setPairDirty(true);
+                  setPairStatus("");
+                  setError("");
+                }}
+                disabled={busy}
+                maxLength={200}
+                placeholder="Start article"
+                className="min-w-0 bg-[#101014] border border-(--line) px-3 py-2.5 mono text-sm focus:border-(--acid) outline-none disabled:opacity-60"
+              />
+              <input
+                value={draftTarget}
+                onChange={(event) => {
+                  setDraftTarget(event.target.value);
+                  setPairDirty(true);
+                  setPairStatus("");
+                  setError("");
+                }}
+                disabled={busy}
+                maxLength={200}
+                placeholder="Target article"
+                className="min-w-0 bg-[#101014] border border-(--line) px-3 py-2.5 mono text-sm focus:border-(--acid) outline-none disabled:opacity-60"
+              />
+            </div>
+            <button
+              onClick={applyCustomPair}
+              disabled={busy || !pairDirty}
+              className="min-h-11 w-full border border-(--line) py-2 mono text-xs uppercase hover:border-(--acid) cursor-pointer disabled:opacity-40"
+            >
+              ✓ Use custom matchup
+            </button>
+          </section>
+        )}
+
         <div className="mb-6">
           <h3 className="mono text-xs uppercase opacity-60 mb-2">
             racers ({room?.players.length ?? "…"}/8)
           </h3>
-          <div className="space-y-1">
+          <div className="space-y-1 min-w-0 overflow-hidden">
             {room?.players.map((p) => (
-              <div key={p.id} className="mono text-sm flex items-center gap-2">
-                <span>🏎️</span>
-                <span className={p.id === playerId ? "text-(--acid)" : ""}>
+              <div
+                key={p.id}
+                className="mono text-sm flex min-w-0 items-center gap-2"
+              >
+                <span className="shrink-0">🏎️</span>
+                <span
+                  title={p.name}
+                  className={`min-w-0 truncate ${
+                    p.id === playerId ? "text-(--acid)" : ""
+                  }`}
+                >
                   {p.name}
-                  {p.id === room.hostId && (
-                    <span className="opacity-50 text-xs"> (host)</span>
-                  )}
                 </span>
+                {p.id === room.hostId && (
+                  <span className="shrink-0 opacity-50 text-xs">(host)</span>
+                )}
               </div>
             ))}
           </div>
         </div>
         <div className="space-y-3">
+          {error && (
+            <p className="mono text-sm text-(--coral) border border-(--coral) px-3 py-2">
+              ⚠️ {error}
+            </p>
+          )}
+          {pairStatus && (
+            <p className="mono text-xs text-(--acid) text-center">{pairStatus}</p>
+          )}
           <button
             onClick={copyInvite}
-            className="w-full border border-(--line) py-2.5 mono text-sm uppercase hover:border-(--acid) cursor-pointer"
+            className="min-h-11 w-full border border-(--line) py-2.5 mono text-sm uppercase hover:border-(--acid) cursor-pointer"
           >
             {copied ? "✓ Invite copied" : "📎 Copy invite link"}
           </button>
@@ -230,11 +477,11 @@ export default function RoomClient({ code }: { code: string }) {
               disabled={busy}
               className="btn-race w-full py-3 text-lg uppercase cursor-pointer disabled:opacity-60"
             >
-              🚦 Start the race
+              {busy ? busyLabel : `🚦 Start round ${room.round}`}
             </button>
           ) : (
             <p className="mono text-sm opacity-60 text-center animate-pulse">
-              waiting for the host to hit the gas…
+              waiting for the host to set up round {room?.round ?? "…"}…
             </p>
           )}
         </div>
