@@ -24,6 +24,7 @@ export interface Room {
 
 export interface StoredRoom extends Room {
   hostTokenHash?: string;
+  playerTokenHashes?: Record<string, string>;
 }
 
 export const ROOM_TTL_SECONDS = 3 * 60 * 60;
@@ -78,6 +79,7 @@ function normalizeStoredRoom(room: StoredRoom): StoredRoom {
 function publicRoom(room: StoredRoom): Room {
   const copy = { ...room };
   delete copy.hostTokenHash;
+  delete copy.playerTokenHashes;
   return copy;
 }
 

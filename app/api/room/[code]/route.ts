@@ -10,8 +10,13 @@ import {
 } from "@/lib/rooms";
 import {
   HOST_COOKIE_MAX_AGE,
+  PLAYER_COOKIE_MAX_AGE,
+  hashPlayerToken,
   hostCookieName,
+  makePlayerToken,
+  playerCookieName,
   verifyHostToken,
+  verifyPlayerToken,
 } from "@/lib/room-auth";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +33,10 @@ class RoomActionError extends Error {
 
 const BLOCKED_NAMESPACE =
   /^(File|Category|Help|Special|Portal|Talk|Wikipedia|Template|Draft|Module|MediaWiki|TimedText|Book|User|WP|Media)( talk)?:/i;
+
+function normalizeArticleTitle(title: string): string {
+  return title.replace(/_/g, " ").trim().toLowerCase();
+}
 
 function actionError(error: unknown) {
   if (error instanceof RoomActionError) {
@@ -77,11 +86,33 @@ function assertHost(
   }
 }
 
+function assertPlayer(
+  body: Record<string, unknown> | null,
+  room: StoredRoom,
+  playerToken: string | undefined
+) {
+  const playerId = typeof body?.playerId === "string" ? body.playerId : "";
+  const player = room.players.find((candidate) => candidate.id === playerId);
+  if (!player) throw new RoomActionError("Unknown player.", 403);
+
+  const expectedHash = room.playerTokenHashes?.[playerId];
+  if (!expectedHash) {
+    throw new RoomActionError(
+      "This old room can't continue securely. Create a fresh room.",
+      409
+    );
+  }
+  if (!verifyPlayerToken(playerToken, expectedHash)) {
+    throw new RoomActionError("This player session is no longer valid.", 403);
+  }
+  return player;
+}
+
 function readPair(body: Record<string, unknown> | null): [string, string] {
   const start = typeof body?.start === "string" ? body.start.trim() : "";
   const target = typeof body?.target === "string" ? body.target.trim() : "";
-  const startKey = start.replace(/_/g, " ").toLowerCase();
-  const targetKey = target.replace(/_/g, " ").toLowerCase();
+  const startKey = normalizeArticleTitle(start);
+  const targetKey = normalizeArticleTitle(target);
 
   if (!start || !target) {
     throw new RoomActionError("Choose both a start and target article.", 400);
@@ -118,6 +149,23 @@ function roomJson(room: StoredRoom, hostToken?: string) {
   return response;
 }
 
+function setPlayerCookie(
+  response: NextResponse,
+  roomCode: string,
+  playerId: string,
+  playerToken: string
+) {
+  response.cookies.set({
+    name: playerCookieName(roomCode, playerId),
+    value: playerToken,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: `/api/room/${roomCode}`,
+    maxAge: PLAYER_COOKIE_MAX_AGE,
+  });
+}
+
 // read room state (lobby + race polling)
 export async function GET(
   _req: NextRequest,
@@ -140,9 +188,14 @@ export async function POST(
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   const action = body?.action;
   const hostToken = req.cookies.get(hostCookieName(roomCode))?.value;
+  const claimedPlayerId = typeof body?.playerId === "string" ? body.playerId : "";
+  const playerToken = claimedPlayerId
+    ? req.cookies.get(playerCookieName(roomCode, claimedPlayerId))?.value
+    : undefined;
 
   if (action === "join") {
     const playerId = makePlayerId();
+    const newPlayerToken = makePlayerToken();
     const name = typeof body?.name === "string" ? body.name : "Racer";
     try {
       const updated = await mutateRoom(roomCode, (room) => {
@@ -152,12 +205,24 @@ export async function POST(
         if (room.players.length >= 8) {
           throw new RoomActionError("Room is full (8 max).", 409);
         }
+        if (!room.playerTokenHashes) {
+          throw new RoomActionError(
+            "This old room can't accept secure players. Create a fresh room.",
+            409
+          );
+        }
         room.players.push(newPlayer(playerId, name, room.start));
+        room.playerTokenHashes[playerId] = hashPlayerToken(newPlayerToken);
       });
       if (!updated) {
         return NextResponse.json({ error: "room not found" }, { status: 404 });
       }
-      return NextResponse.json({ playerId, room: toPublicRoom(updated.room) });
+      const response = NextResponse.json({
+        playerId,
+        room: toPublicRoom(updated.room),
+      });
+      setPlayerCookie(response, roomCode, playerId, newPlayerToken);
+      return response;
     } catch (error) {
       return actionError(error);
     }
@@ -215,9 +280,11 @@ export async function POST(
     try {
       const updated = await mutateRoom(roomCode, (room) => {
         assertRound(body, room, true);
-        const player = room.players.find((candidate) => candidate.id === body?.playerId);
-        if (!player) throw new RoomActionError("Unknown player.", 403);
+        const player = assertPlayer(body, room, playerToken);
         if (player.finished) return;
+        if (!room.startAt || Date.now() < room.startAt) {
+          throw new RoomActionError("The race hasn't started yet.", 409);
+        }
 
         if (
           typeof body?.clicks !== "number" ||
@@ -236,6 +303,12 @@ export async function POST(
           if (nextPath.length !== Math.min(body.clicks + 1, 200)) {
             throw new RoomActionError("Invalid race path.", 400);
           }
+          if (
+            nextPath.length === 0 ||
+            normalizeArticleTitle(nextPath[0]) !== normalizeArticleTitle(room.start)
+          ) {
+            throw new RoomActionError("Invalid race start.", 400);
+          }
         }
         player.clicks = body.clicks;
         if (nextPath) {
@@ -250,6 +323,13 @@ export async function POST(
           Number.isFinite(body.timeMs) &&
           body.timeMs >= 0
         ) {
+          if (
+            !nextPath ||
+            normalizeArticleTitle(nextPath[nextPath.length - 1]) !==
+              normalizeArticleTitle(room.target)
+          ) {
+            throw new RoomActionError("Finish must reach the target article.", 400);
+          }
           player.finished = true;
           player.timeMs = Math.round(body.timeMs);
         }

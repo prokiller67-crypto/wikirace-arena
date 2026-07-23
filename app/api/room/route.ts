@@ -8,9 +8,13 @@ import {
 } from "@/lib/rooms";
 import {
   HOST_COOKIE_MAX_AGE,
+  PLAYER_COOKIE_MAX_AGE,
   hashHostToken,
+  hashPlayerToken,
   hostCookieName,
   makeHostToken,
+  makePlayerToken,
+  playerCookieName,
 } from "@/lib/room-auth";
 
 export const dynamic = "force-dynamic";
@@ -34,6 +38,7 @@ export async function POST(req: NextRequest) {
 
   const hostId = makePlayerId();
   const hostToken = makeHostToken();
+  const hostPlayerToken = makePlayerToken();
 
   for (let attempt = 0; attempt < 10; attempt++) {
     const code = makeCode();
@@ -43,6 +48,9 @@ export async function POST(req: NextRequest) {
       target,
       hostId,
       hostTokenHash: hashHostToken(hostToken),
+      playerTokenHashes: {
+        [hostId]: hashPlayerToken(hostPlayerToken),
+      },
       round: 1,
       startAt: null,
       createdAt: Date.now(),
@@ -59,6 +67,15 @@ export async function POST(req: NextRequest) {
       secure: process.env.NODE_ENV === "production",
       path: `/api/room/${code}`,
       maxAge: HOST_COOKIE_MAX_AGE,
+    });
+    response.cookies.set({
+      name: playerCookieName(code, hostId),
+      value: hostPlayerToken,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: `/api/room/${code}`,
+      maxAge: PLAYER_COOKIE_MAX_AGE,
     });
     return response;
   }
