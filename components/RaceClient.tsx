@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { preconnect } from "react-dom";
 import Link from "next/link";
 import {
@@ -63,6 +63,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   const startEpochRef = useRef(0);
   const saveKeyRef = useRef("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const breadcrumbRef = useRef<HTMLDivElement>(null);
   const phaseRef = useRef<Phase>("loading");
   phaseRef.current = phase;
 
@@ -315,7 +316,9 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
       const a = (e.target as HTMLElement).closest("a");
       if (!a) return;
       e.preventDefault();
-      if (lastPointerTypeRef.current !== "mouse") {
+      // Keyboard and assistive-tech clicks have detail=0. Mouse clicks are
+      // already handled on pointerdown; touch/pen clicks still land here.
+      if (lastPointerTypeRef.current !== "mouse" || e.detail === 0) {
         const title = a.getAttribute("data-wl-title");
         if (title && !articleLoading) navigate(title);
       }
@@ -395,6 +398,18 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
       })
     : [];
 
+  // Keep this object stable while the 100ms race timer re-renders the HUD.
+  // React otherwise assigns innerHTML again on every tick, recreating images.
+  const articleMarkup = useMemo(
+    () => ({ __html: article?.html ?? "" }),
+    [article?.html]
+  );
+
+  useEffect(() => {
+    const breadcrumb = breadcrumbRef.current;
+    if (breadcrumb) breadcrumb.scrollLeft = breadcrumb.scrollWidth;
+  }, [path]);
+
   if (phase === "error") {
     return (
       <main className="min-h-screen flex flex-col items-center justify-center gap-6 p-8">
@@ -419,24 +434,39 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   }
 
   return (
-    <main className="h-screen flex flex-col">
+    <main className="h-dvh min-h-0 overflow-hidden flex flex-col">
       {/* HUD bar */}
-      <header className="card-dark border-b border-(--line) px-4 py-2 flex items-center gap-4 flex-wrap">
-        <Link href="/" className="display text-(--acid) text-lg leading-none">
+      <header className="card-dark shrink-0 border-b border-(--line) grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-3 py-2 sm:flex sm:flex-wrap sm:gap-4 sm:px-4">
+        <Link
+          href="/"
+          className="display min-w-0 truncate text-(--acid) text-base leading-none sm:text-lg"
+        >
           WIKIRACE<span className="text-(--paper)">⚡ARENA</span>
         </Link>
-        <div className="mono text-2xl font-bold tabular-nums text-(--acid)">
+        <div className="mono justify-self-end text-xl font-bold tabular-nums text-(--acid) sm:text-2xl">
           {fmtTime(elapsed)}
         </div>
-        <div className="mono text-sm opacity-80">
-          {path.length - 1} click{path.length - 1 === 1 ? "" : "s"}
+        <div className="mono flex min-w-0 items-center gap-2 overflow-hidden text-xs opacity-80 sm:text-sm">
+          <span className="shrink-0">
+            {path.length - 1} click{path.length - 1 === 1 ? "" : "s"}
+          </span>
+          {room && <span className="truncate text-xs opacity-70">room {room.code}</span>}
+          <span
+            role="status"
+            aria-live="polite"
+            className={`shrink-0 text-xs text-(--sky) ${
+              articleLoading ? "visible" : "invisible"
+            }`}
+          >
+            loading…
+          </span>
         </div>
-        {room && (
-          <div className="mono text-xs opacity-60">room {room.code}</div>
-        )}
-        <div className="flex items-center gap-2 ml-auto">
-          <span className="mono text-xs uppercase opacity-60">target</span>
-          <span className="pulse-acid bg-(--acid) text-[#101014] display text-sm px-3 py-1">
+        <div className="flex min-w-0 items-center gap-2 justify-self-end sm:ml-auto">
+          <span className="mono hidden text-xs uppercase opacity-60 sm:inline">target</span>
+          <span
+            title={setup.targetCanonical}
+            className="pulse-acid block max-w-[42vw] truncate bg-(--acid) px-2 py-1 text-[#101014] display text-xs sm:max-w-[36vw] sm:px-3 sm:text-sm lg:max-w-none"
+          >
             {setup.targetCanonical}
           </span>
         </div>
@@ -463,26 +493,45 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
       )}
 
       {/* opponents bars (rooms) */}
-      {room &&
-        opponents.map((p) => (
-          <div
-            key={p.id}
-            className="card-dark border-b border-(--line) px-4 py-1 flex items-center gap-3"
-          >
-            <span className="mono text-xs uppercase text-(--sky) w-32 truncate">
-              🏎️ {p.name}
-            </span>
-            <span className="mono text-xs opacity-70 flex-1 truncate">
-              {p.finished
-                ? `🏁 finished — ${fmtTime(p.timeMs ?? 0)} / ${p.clicks} clicks`
-                : `reading: ${p.currentTitle}`}
-            </span>
-            <span className="mono text-xs opacity-60">{p.clicks} clicks</span>
+      {room && opponents.length > 0 && (
+        <>
+          <div className="card-dark shrink-0 flex gap-2 overflow-x-auto border-b border-(--line) px-3 py-1.5 sm:hidden">
+            {opponents.map((p) => (
+              <div
+                key={p.id}
+                className="mono flex shrink-0 items-center gap-1.5 border border-(--line) bg-[#0a0a0e] px-2 py-1 text-xs"
+              >
+                <span className="max-w-24 truncate text-(--sky)">🏎️ {p.name}</span>
+                <span className="opacity-70">
+                  {p.finished ? `🏁 ${fmtTime(p.timeMs ?? 0)}` : `${p.clicks}c`}
+                </span>
+              </div>
+            ))}
           </div>
-        ))}
+          {opponents.map((p) => (
+            <div
+              key={`${p.id}-detail`}
+              className="card-dark hidden border-b border-(--line) px-4 py-1 items-center gap-3 sm:flex"
+            >
+              <span className="mono text-xs uppercase text-(--sky) w-32 truncate">
+                🏎️ {p.name}
+              </span>
+              <span className="mono text-xs opacity-70 flex-1 truncate">
+                {p.finished
+                  ? `🏁 finished — ${fmtTime(p.timeMs ?? 0)} / ${p.clicks} clicks`
+                  : `reading: ${p.currentTitle}`}
+              </span>
+              <span className="mono text-xs opacity-60">{p.clicks} clicks</span>
+            </div>
+          ))}
+        </>
+      )}
 
       {/* breadcrumb path */}
-      <div className="px-4 py-1.5 flex items-center gap-1 overflow-x-auto whitespace-nowrap mono text-xs border-b border-(--line) bg-[#0c0c10]">
+      <div
+        ref={breadcrumbRef}
+        className="shrink-0 px-3 py-1.5 flex items-center gap-1 overflow-x-auto whitespace-nowrap mono text-xs border-b border-(--line) bg-[#0c0c10] sm:px-4"
+      >
         {path.map((s, i) => (
           <span key={i} className="flex items-center gap-1">
             {i > 0 && <span className="opacity-40">→</span>}
@@ -496,20 +545,21 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
       {/* article */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto speedlines"
+        className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden speedlines"
         onClick={onArticleClick}
         onPointerDown={onArticlePointerDown}
         onMouseOver={onArticleHover}
       >
         <article
-          className={`wiki-page max-w-3xl mx-auto my-6 px-8 py-6 shadow-2xl rounded-sm transition-opacity ${
-            articleLoading ? "opacity-40 pointer-events-none" : "opacity-100"
+          aria-busy={articleLoading}
+          className={`wiki-page w-full min-w-0 max-w-3xl mx-auto my-3 px-4 py-4 shadow-2xl rounded-sm sm:my-6 sm:px-8 sm:py-6 ${
+            articleLoading ? "pointer-events-none" : ""
           }`}
         >
           <h1 className="text-3xl font-bold border-b-2 border-[#d8cfb4] pb-2 mb-4">
             {article.canonicalTitle}
           </h1>
-          <div dangerouslySetInnerHTML={{ __html: article.html }} />
+          <div dangerouslySetInnerHTML={articleMarkup} />
         </article>
       </div>
 

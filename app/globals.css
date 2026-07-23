@@ -146,6 +146,56 @@ body {
   pointer-events: none;
 }
 
+@media (max-width: 639px) {
+  .wiki-page {
+    overflow-wrap: anywhere;
+  }
+
+  .wiki-page figure,
+  .wiki-page table.infobox {
+    float: none;
+    clear: both;
+    max-width: 100%;
+    margin: 0.8em 0;
+    box-sizing: border-box;
+  }
+
+  .wiki-page figure {
+    width: fit-content;
+    margin-inline: auto;
+  }
+
+  .wiki-page table.infobox {
+    width: 100%;
+    table-layout: auto;
+  }
+
+  .wiki-page table.sidebar {
+    float: none;
+    clear: both;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .wiki-page ul.gallery {
+    margin: 0.8em 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .wiki-page .gallerybox,
+  .wiki-page .gallerybox .thumb {
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .wiki-page table:not(.infobox):not(.sidebar) td,
+  .wiki-page table:not(.infobox):not(.sidebar) th {
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+}
+
 /* win pulse on the target chip */
 @keyframes pulse-acid {
   0%, 100% { box-shadow: 0 0 0 0 rgba(215, 255, 0, 0.6); }
