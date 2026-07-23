@@ -8,6 +8,7 @@ import {
   fetchSummary,
   normalizeTitle,
   prefetchArticle,
+  randomFunPairExcept,
   type LoadedArticle,
 } from "@/lib/wiki";
 import {
@@ -38,12 +39,20 @@ export interface RoomProps {
   playerId: string;
   start: string;
   target: string;
+  round: number;
   startAt: number; // epoch ms, SERVER clock
   playerName: string;
+  isHost: boolean;
   clockOffset: number; // serverNow - clientNow at room fetch time
 }
 
-export default function RaceClient({ room }: { room?: RoomProps }) {
+export default function RaceClient({
+  room,
+  onRoomRoundChange,
+}: {
+  room?: RoomProps;
+  onRoomRoundChange?: (room: Room) => void;
+}) {
   preconnect("https://en.wikipedia.org");
   preconnect("https://upload.wikimedia.org");
   const [setup, setSetup] = useState<Setup | null>(null);
@@ -58,6 +67,8 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   const [copied, setCopied] = useState(false);
   const [copyFallback, setCopyFallback] = useState("");
   const [roomState, setRoomState] = useState<Room | null>(null);
+  const [nextRoundBusy, setNextRoundBusy] = useState(false);
+  const [nextRoundError, setNextRoundError] = useState("");
 
   const startTimeRef = useRef<number>(0); // performance.now() basis for solo, epoch for rooms
   const startEpochRef = useRef(0);
@@ -65,6 +76,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const breadcrumbRef = useRef<HTMLDivElement>(null);
   const phaseRef = useRef<Phase>("loading");
+  const transitioningRoundRef = useRef<number | null>(null);
   phaseRef.current = phase;
 
   const now = useCallback(
@@ -108,7 +120,9 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
     (async () => {
       try {
         // crash recovery: a reload mid-race must not reset progress to zero
-        const saveKey = room ? `wr-prog-${room.code}-${room.playerId}` : "wr-prog-solo";
+        const saveKey = room
+          ? `wr-prog-${room.code}-${room.playerId}-${room.round}`
+          : "wr-prog-solo";
         saveKeyRef.current = saveKey;
         let saved: {
           s: string;
@@ -116,6 +130,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
           e: number;
           p: [string, number][];
           g?: GhostPlan;
+          f?: number;
         } | null = null;
         try {
           saved = JSON.parse(sessionStorage.getItem(saveKey) ?? "null");
@@ -152,7 +167,19 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
             : [{ title: first.canonicalTitle, atMs: 0 }]
         );
         startEpochRef.current = saved?.e ?? Date.now();
-        if (room && Date.now() + room.clockOffset < room.startAt) {
+        if (saved?.f !== undefined) {
+          const restoredPath = saved.p.map(([title, atMs]) => ({ title, atMs }));
+          setElapsed(saved.f);
+          setResult({
+            name: playerName,
+            start: s,
+            target: targetSum.title,
+            clicks: restoredPath.length - 1,
+            timeMs: saved.f,
+            path: restoredPath,
+          });
+          setPhase("won");
+        } else if (room && Date.now() + room.clockOffset < room.startAt) {
           setPhase("countdown");
         } else {
           // continue the clock from where the crash left it
@@ -169,6 +196,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
               e: startEpochRef.current,
               p: saved?.p ?? [[first.canonicalTitle, 0]],
               g: ghost ?? undefined,
+              f: saved?.f,
             })
           );
         } catch {}
@@ -200,6 +228,23 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   }, [phase, now]);
 
   // --- room polling + progress push ---
+  const acceptRoomState = useCallback(
+    (nextRoom: Room) => {
+      if (room && nextRoom.round !== room.round) {
+        if (transitioningRoundRef.current !== nextRoom.round) {
+          transitioningRoundRef.current = nextRoom.round;
+          try {
+            sessionStorage.removeItem(saveKeyRef.current);
+          } catch {}
+          onRoomRoundChange?.(nextRoom);
+        }
+        return;
+      }
+      setRoomState(nextRoom);
+    },
+    [room, onRoomRoundChange]
+  );
+
   const pushProgress = useCallback(
     async (payload: Record<string, unknown>) => {
       if (!room) return;
@@ -207,30 +252,37 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
         const res = await fetch(`/api/room/${room.code}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "progress", playerId: room.playerId, ...payload }),
+          body: JSON.stringify({
+            action: "progress",
+            playerId: room.playerId,
+            ...payload,
+            round: room.round,
+          }),
         });
-        if (res.ok) setRoomState(await res.json());
+        if (res.ok) acceptRoomState(await res.json());
       } catch {
         // network blip — next poll catches up
       }
     },
-    [room]
+    [acceptRoomState, room]
   );
 
   useEffect(() => {
-    if (
-      !room ||
-      (phase !== "racing" && phase !== "won" && phase !== "lost" && phase !== "countdown")
-    )
-      return;
-    const id = setInterval(async () => {
+    if (!room) return;
+    let cancelled = false;
+    const poll = async () => {
       try {
         const res = await fetch(`/api/room/${room.code}`, { cache: "no-store" });
-        if (res.ok) setRoomState(await res.json());
+        if (res.ok && !cancelled) acceptRoomState(await res.json());
       } catch {}
-    }, 1500);
-    return () => clearInterval(id);
-  }, [room, phase]);
+    };
+    poll();
+    const id = setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [acceptRoomState, room]);
 
   // --- navigation on wiki-link click ---
   const navigate = useCallback(
@@ -248,7 +300,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
             normalizeTitle(art.canonicalTitle) ===
             normalizeTitle(setup.targetCanonical);
           try {
-            if (won) {
+            if (won && !room) {
               sessionStorage.removeItem(saveKeyRef.current);
             } else {
               sessionStorage.setItem(
@@ -259,6 +311,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
                   e: startEpochRef.current,
                   p: next.map((x) => [x.title, x.atMs]),
                   g: setup.ghost ?? undefined,
+                  f: won ? Math.round(atMs) : undefined,
                 })
               );
             }
@@ -367,11 +420,14 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
   const finishersCount = roomState
     ? roomState.players.filter((p) => p.finished).length
     : 0;
+  const roomRaceOver = roomState !== null && finishersCount >= podiumSize;
+  const canOpenNextRound =
+    roomRaceOver || Boolean(room?.isHost && finishersCount >= 1);
   useEffect(() => {
-    if (room && phase === "racing" && finishersCount >= podiumSize) {
+    if (room && phase === "racing" && roomRaceOver) {
       setPhase("lost");
     }
-  }, [room, phase, finishersCount, podiumSize]);
+  }, [room, phase, roomRaceOver]);
 
   // solo ghost race is also first-to-finish: the ghost crossing the line ends it
   useEffect(() => {
@@ -380,14 +436,37 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
     }
   }, [room, ghost, phase, ghostFinished]);
 
-  // race over — drop the crash-recovery blob
+  // A loss has no pending server result. Solo wins also need no recovery after
+  // the result overlay appears; room wins are kept until the server confirms.
   useEffect(() => {
-    if (phase === "lost" || phase === "won") {
+    if (phase === "lost" || (phase === "won" && !room)) {
       try {
         sessionStorage.removeItem(saveKeyRef.current);
       } catch {}
     }
-  }, [phase]);
+  }, [phase, room]);
+
+  // A locally completed room race must eventually reach the server even if the
+  // finishing POST hit a transient network failure. Keep retrying until polling
+  // confirms this player as finished or the room advances to another round.
+  useEffect(() => {
+    if (!room || phase !== "won" || !result) return;
+    const me = roomState?.players.find((player) => player.id === room.playerId);
+    // Keep the completed blob until the room changes round. In 4+ player rooms
+    // an early podium finisher may reload while the remaining spots are open.
+    if (me?.finished) return;
+
+    const finishPayload = {
+      currentTitle: result.target,
+      clicks: result.clicks,
+      path: result.path.map((step) => step.title),
+      finished: true,
+      timeMs: result.timeMs,
+    };
+    pushProgress(finishPayload);
+    const id = setInterval(() => pushProgress(finishPayload), 2000);
+    return () => clearInterval(id);
+  }, [phase, pushProgress, result, room, roomState]);
 
   const sortedPlayers = roomState
     ? [...roomState.players].sort((a, b) => {
@@ -409,6 +488,73 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
     const breadcrumb = breadcrumbRef.current;
     if (breadcrumb) breadcrumb.scrollLeft = breadcrumb.scrollWidth;
   }, [path]);
+
+  const startNextRound = async () => {
+    if (!room || !canOpenNextRound || nextRoundBusy) return;
+    setNextRoundBusy(true);
+    setNextRoundError("");
+    try {
+      const [start, target] = randomFunPairExcept(room.start, room.target);
+      const res = await fetch(`/api/room/${room.code}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "nextRound",
+          playerId: room.playerId,
+          round: room.round,
+          start,
+          target,
+          force: !roomRaceOver,
+        }),
+      });
+      const nextRoom = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(nextRoom?.error ?? "Couldn't open the next round.");
+      }
+      acceptRoomState(nextRoom);
+    } catch (e) {
+      setNextRoundError(
+        e instanceof Error ? e.message : "Couldn't open the next round."
+      );
+      setNextRoundBusy(false);
+    }
+  };
+
+  const roomNextRoundControls = room ? (
+    <div className="space-y-3">
+      {room.isHost ? (
+        <button
+          onClick={startNextRound}
+          disabled={!canOpenNextRound || nextRoundBusy}
+          className="btn-race w-full py-3 text-center text-lg uppercase cursor-pointer disabled:opacity-50"
+        >
+          {nextRoundBusy
+            ? "Opening the garage…"
+            : roomRaceOver
+              ? "🏁 New race — same room"
+              : canOpenNextRound
+                ? "🏁 End round — same room"
+                : "Syncing final standings…"}
+        </button>
+      ) : (
+        <p className="mono border border-(--line) px-3 py-3 text-center text-sm animate-pulse">
+          staying in room {room.code} — waiting for the host to open round{" "}
+          {room.round + 1}…
+        </p>
+      )}
+      {nextRoundError && (
+        <p className="mono text-sm text-(--coral) text-center">
+          ⚠️ {nextRoundError}
+        </p>
+      )}
+      <Link
+        href="/"
+        className="block w-full border border-(--line) py-2 mono text-xs uppercase hover:border-(--coral) text-center"
+      >
+        Leave room
+      </Link>
+    </div>
+  ) : null;
 
   if (phase === "error") {
     return (
@@ -492,6 +638,25 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
         </div>
       )}
 
+      {room &&
+        room.isHost &&
+        phase === "racing" &&
+        finishersCount > 0 &&
+        !roomRaceOver && (
+          <div className="card-dark shrink-0 flex flex-wrap items-center justify-between gap-2 border-b border-(--line) px-3 py-2 sm:px-4">
+            <span className="mono text-xs opacity-70">
+              {finishersCount}/{podiumSize} podium spots filled
+            </span>
+            <button
+              onClick={startNextRound}
+              disabled={nextRoundBusy}
+              className="mono border border-(--coral) px-3 py-1.5 text-xs uppercase text-(--coral) hover:bg-[rgba(255,77,90,0.08)] cursor-pointer disabled:opacity-50"
+            >
+              {nextRoundBusy ? "Ending…" : "End round & return to lobby"}
+            </button>
+          </div>
+        )}
+
       {/* opponents bars (rooms) */}
       {room && opponents.length > 0 && (
         <>
@@ -566,7 +731,7 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
       {/* countdown overlay (rooms) */}
       {phase === "countdown" && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex flex-col items-center justify-center gap-4">
-          <p className="mono text-sm uppercase opacity-70">
+          <p className="mono max-w-[90vw] break-words px-4 text-center text-sm uppercase leading-relaxed opacity-70 sm:max-w-2xl">
             {setup.start} → {setup.targetCanonical}
           </p>
           <div className="display text-8xl text-(--acid)">
@@ -598,26 +763,24 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
                 <Standings players={sortedPlayers} meId={room.playerId} />
               </div>
             )}
-            <div className="flex gap-3">
-              {!room && (
+            {room ? (
+              roomNextRoundControls
+            ) : (
+              <div className="flex gap-3">
                 <button
                   onClick={() => window.location.reload()}
                   className="flex-1 btn-race py-3 text-center text-lg uppercase cursor-pointer"
                 >
                   Rematch
                 </button>
-              )}
-              <Link
-                href="/"
-                className={`flex-1 py-3 text-center uppercase ${
-                  room
-                    ? "btn-race text-lg"
-                    : "border border-(--line) mono text-sm hover:border-(--acid) self-stretch flex items-center justify-center"
-                }`}
-              >
-                New race
-              </Link>
-            </div>
+                <Link
+                  href="/"
+                  className="flex-1 border border-(--line) py-3 mono text-sm uppercase hover:border-(--acid) self-stretch flex items-center justify-center text-center"
+                >
+                  New race
+                </Link>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -694,22 +857,24 @@ export default function RaceClient({ room }: { room?: RoomProps }) {
                 Your whole run is encoded in the link — friends race your live ghost.
                 No account, no server, no excuses.
               </p>
-              <div className="flex gap-3">
-                {!room && (
+              {room ? (
+                roomNextRoundControls
+              ) : (
+                <div className="flex gap-3">
                   <button
                     onClick={() => window.location.reload()}
                     className="flex-1 border border-(--line) py-2 mono text-sm uppercase hover:border-(--acid) cursor-pointer"
                   >
                     Rematch
                   </button>
-                )}
-                <Link
-                  href="/"
-                  className="flex-1 border border-(--line) py-2 mono text-sm uppercase hover:border-(--acid) text-center"
-                >
-                  New race
-                </Link>
-              </div>
+                  <Link
+                    href="/"
+                    className="flex-1 border border-(--line) py-2 mono text-sm uppercase hover:border-(--acid) text-center"
+                  >
+                    New race
+                  </Link>
+                </div>
+              )}
             </div>
           </div>
         </div>

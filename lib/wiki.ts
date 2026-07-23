@@ -225,3 +225,18 @@ export const FUN_PAIRS: [string, string][] = [
 export function randomFunPair(): [string, string] {
   return FUN_PAIRS[Math.floor(Math.random() * FUN_PAIRS.length)];
 }
+
+export function randomFunPairExcept(
+  currentStart: string,
+  currentTarget: string
+): [string, string] {
+  const currentKey = [currentStart, currentTarget]
+    .map(normalizeTitle)
+    .sort()
+    .join("→");
+  const alternatives = FUN_PAIRS.filter(
+    (pair) => pair.map(normalizeTitle).sort().join("→") !== currentKey
+  );
+  const pool = alternatives.length > 0 ? alternatives : FUN_PAIRS;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
